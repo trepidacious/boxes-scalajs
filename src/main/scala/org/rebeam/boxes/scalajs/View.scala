@@ -18,4 +18,5 @@ object View {
   implicit def listView[A: View] = new View[List[A]] {
     def render(m: List[A]) = ul(m.map(a => li(implicitly[View[A]].render(a))))
   }
+  def view[M: View](m: M) = implicitly[View[M]].render(m)
 }
