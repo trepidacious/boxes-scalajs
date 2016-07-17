@@ -16,6 +16,8 @@ import upickle.Js
 import upickle.Invalid
 import upickle.default._
 
+import scala.language.higherKinds
+
 @Lenses case class Street(name: String, number: Int)
 @Lenses case class Address(street: Street)
 @Lenses case class Company(address: Address)
@@ -162,7 +164,6 @@ object DemoApp extends JSApp {
 
 
     val a4 = Address.addressDeltaReader.read(setDeltaJSON).apply(a3)
-    
 
     appendPar(document.body, "Before delta: " + a)
     appendPar(document.body, "After name delta: " + a2)

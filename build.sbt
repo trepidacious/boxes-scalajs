@@ -23,3 +23,12 @@ addCompilerPlugin(compilerPlugin("org.scalamacros" % "paradise" % "2.1.0" cross 
 libraryDependencies += "com.lihaoyi" %%% "upickle" % "0.4.1"
 
 scalaJSUseRhino in Global := false
+
+scalacOptions ++= Seq(
+  "-feature",
+  "-deprecation",
+  "-encoding", "UTF-8",
+  "-unchecked",
+  "-Xfatal-warnings",
+  "-Xlint"
+)
