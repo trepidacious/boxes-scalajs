@@ -23,8 +23,12 @@ import scala.language.higherKinds
 @Lenses case class Company(address: Address)
 @Lenses case class Employee(name: String, company: Company)
 
+case class StreetActionNumberMultiple(multiple: Int) extends Delta[Street] {
+  def apply(s: Street): Street = Street(s.name, s.name.length * multiple)
+}
+
 object DeltaReaders {
-  implicit def deltaReaderFromReader[M: Reader] = new DeltaReader[M] {
+  def deltaReaderFromReader[M: Reader] = new DeltaReader[M] {
     def read(v: Js.Value) = SetDelta(implicitly[Reader[M]].read(v))
   }
 }
@@ -37,22 +41,47 @@ object Street {
       case Js.Obj(field, _ @ _*) => field match {
         case ("lens", v) => v match {
           case Js.Obj(field, _ @ _*) => field match {
-            case ("name", v) => LensDelta(Street.name, implicitly[DeltaReader[String]].read(v))
-            case ("number", v) => LensDelta(Street.number, implicitly[DeltaReader[Int]].read(v))
+            case ("name", v) => LensDelta(Street.name, deltaReaderFromReader[String].read(v))
+            case ("number", v) => LensDelta(Street.number, deltaReaderFromReader[Int].read(v))
             case _ => throw new Invalid.Data(v, "Invalid delta, expected object with name or number field")
           }
         }
+        
         case ("set", v) => SetDelta(implicitly[Reader[Street]].read(v))
         
-        case _ => throw new Invalid.Data(v, "Invalid delta, expected object with name or number field")
+        case ("action", v) => v match {
+          case Js.Obj(field, _ @ _*) => field match {
+            case ("numberMultiple", v) => implicitly[Reader[StreetActionNumberMultiple]].read(v)
+            case _ => throw new Invalid.Data(v, "Invalid delta, unknown action")
+          }
+        }
+        
+        case _ => throw new Invalid.Data(v, "Invalid delta, expected object with field lens, set or action")
       }
       case _ => throw new Invalid.Data(v, "Invalid delta, expected object")
     }
   }
 }
 
+/**
+ * Interface provided by a parent component to a child component, 
+ * allowing it to run a delta, which is also required encoded to JSON.
+ * This is all the child component needs to know about a parent component.
+ */
+trait Parent[C] {
+  def runDelta(delta: Delta[C], deltaJs: Js.Value): Unit
+}
+
+trait Mirror[M] {
+  def data: M
+  def act(d: Delta[M]): Unit
+}
+
+// object LensCallback {
+//   def zoom[A, B](model: A, lens: Lens[A, B], dj: DeltaAndJsonCallBack[A], field: String) = new DataAndDelta
+// }
+
 object Address {
-  import DeltaReaders._
   import Street._
   
   implicit val addressDeltaReader: DeltaReader[Address] = new DeltaReader[Address] {
@@ -162,13 +191,26 @@ object DemoApp extends JSApp {
         )
       )
 
-
     val a4 = Address.addressDeltaReader.read(setDeltaJSON).apply(a3)
+
+    val a5 = Address.addressDeltaReader.read(
+      Js.Obj("lens" -> 
+        Js.Obj("street" ->
+          Js.Obj("action" -> 
+            Js.Obj("numberMultiple" -> implicitly[Writer[StreetActionNumberMultiple]].write(StreetActionNumberMultiple(2)))
+          )
+        )
+      )
+    ).apply(a4)
+
+    
+
 
     appendPar(document.body, "Before delta: " + a)
     appendPar(document.body, "After name delta: " + a2)
     appendPar(document.body, "After number delta: " + a3)
     appendPar(document.body, "After set delta: " + a4)
+    appendPar(document.body, "After action delta: " + a5)
     appendPar(document.body, "Example JSON delta: " + setDeltaJSON)
     
     val e = Employee("bob", Company(Address(Street("bobstreet", 42))))
