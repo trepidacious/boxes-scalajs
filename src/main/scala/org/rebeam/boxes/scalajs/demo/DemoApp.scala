@@ -23,7 +23,9 @@ import scala.language.higherKinds
 @Lenses case class Company(address: Address)
 @Lenses case class Employee(name: String, company: Company)
 
-case class StreetActionNumberMultiple(multiple: Int) extends Delta[Street] {
+sealed trait StreetAction extends Delta[Street]
+
+case class StreetActionNumberMultiple(multiple: Int) extends StreetAction {
   def apply(s: Street): Street = Street(s.name, s.name.length * multiple)
 }
 
@@ -52,12 +54,7 @@ object Street {
         
         case ("value", v) => ValueDelta(implicitly[Reader[Street]].read(v))
         
-        case ("action", v) => v match {
-          case Js.Obj(field, _ @ _*) => field match {
-            case ("numberMultiple", v) => implicitly[Reader[StreetActionNumberMultiple]].read(v)
-            case _ => throw new Invalid.Data(v, "Invalid delta, unknown action")
-          }
-        }
+        case ("action", v) => implicitly[Reader[StreetAction]].read(v)
         
         case _ => throw new Invalid.Data(v, "Invalid delta, expected object with field lens, set or action")
       }
@@ -241,9 +238,7 @@ object DemoApp extends JSApp {
     val a5 = Address.addressDeltaReader.readDelta(
       Js.Obj("lens" -> 
         Js.Obj("street" ->
-          Js.Obj("action" -> 
-            Js.Obj("numberMultiple" -> implicitly[Writer[StreetActionNumberMultiple]].write(StreetActionNumberMultiple(2)))
-          )
+          Js.Obj("action" -> implicitly[Writer[StreetAction]].write(StreetActionNumberMultiple(2)))
         )
       )
     ).apply(a4)
@@ -252,8 +247,14 @@ object DemoApp extends JSApp {
     //alongside the encoded JSON
     val callback = (delta: Delta[Address], deltaJs: Js.Value) => {
       val aDelta = delta.apply(a)
-      appendPar(document.body, "After cursor delta: " + aDelta)
+      appendPar(document.body, "After cursor delta applied directly: " + aDelta)
       appendPar(document.body, "Cursor delta encoded as: " + deltaJs)
+      
+      val aDeltaJs = Address.addressDeltaReader.readDelta(deltaJs).apply(a)
+      appendPar(document.body, "After cursor delta applied using JSON: " + aDeltaJs)
+      
+      appendPar(document.body, "Equal? " + (aDelta == aDeltaJs))
+      
     }
     val root = RootParent(callback)
     val addressCursor = Cursor(root, a)
@@ -263,14 +264,13 @@ object DemoApp extends JSApp {
     streetCursor.set(Street("Another new street set using cursor", 9003))
     streetCursor.act(StreetActionNumberMultiple(3))
 
-
     appendPar(document.body, "Before delta: " + a)
     appendPar(document.body, "After name delta: " + a2)
     appendPar(document.body, "After number delta: " + a3)
     appendPar(document.body, "After set delta: " + a4)
-    appendPar(document.body, "After action delta: " + a5)
+    // appendPar(document.body, "After action delta: " + a5)
     appendPar(document.body, "Example JSON delta: " + valueDeltaJSON)
-    
+
     val e = Employee("bob", Company(Address(Street("bobstreet", 42))))
     
     val streetName = (Employee.company ^|-> Company.address ^|-> Address.street ^|-> Street.name).get(e)
