@@ -118,7 +118,12 @@ case class Cursor[M](parent: Parent[M], model: M) extends Parent[M] {
     runDelta(ValueDelta(newModel), Js.Obj("value" -> writer.write(newModel)))
   
   //TODO if we had a FieldLens being a Lens with an added fieldName: String we could use this instead, and
-  //use a macro to provide these (and read)
+  //use a macro to provide these (and readDelta implementation)
+  //TODO macros could generate a specific cursor type (e.g. AddressCursor) for each model type, having
+  //methods to zoom to the cursor for each field, providing the appropriate child cursor
+  //type for that child (e.g. StreetCursor), when that child is also using the same macro?
+  //This would then prevent use of invalid fields, and could propagate access control through
+  //a data model, etc.
   def zoom[C](lens: Lens[M, C], fieldName: String): Cursor[C] = 
     Cursor(LensParent(parent, lens, fieldName), lens.get(model))
 }
@@ -244,7 +249,9 @@ object DemoApp extends JSApp {
     ).apply(a4)
 
     //Build a delta using cursor, just adding resulting new models to paragraphs
-    //alongside the encoded JSON
+    //alongside the encoded JSON, then applying the delta read from encoded js
+    //and comparing the result, to show that server-side replication of the
+    //delta would work
     val callback = (delta: Delta[Address], deltaJs: Js.Value) => {
       val aDelta = delta.apply(a)
       appendPar(document.body, "After cursor delta applied directly: " + aDelta)
