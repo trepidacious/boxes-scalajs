@@ -36,31 +36,70 @@ object DeltaReaders {
   def deltaReaderFromPF[M](error: String)(pf: PartialFunction[Js.Value, Delta[M]]) = new DeltaReader[M] {
     def readDelta(v: Js.Value): Delta[M] = pf.applyOrElse(v, (v: Js.Value) => throw new Invalid.Data(v, error))
   }
+  implicit val stringDeltaReader = deltaReaderFromReader[String]
+  implicit val intDeltaReader = deltaReaderFromReader[Int]
 }
+
+object DeltaReader {
+  def build[M: Reader] = new DeltaReaderBuilder[M](PartialFunction.empty)
+}
+
+class DeltaReaderBuilder[M: Reader](fToD: PartialFunction[(String, Js.Value), Delta[M]]) extends DeltaReader[M] {
+  def readDelta(v: Js.Value): Delta[M] = v match {
+    case Js.Obj(field, _ @ _*) => field match {
+      
+      case ("lens", v) => v match {
+        //Use our fieldToDelta - if it can't convert to a delta, invalid data
+        case Js.Obj(field, _ @ _*) => fToD.applyOrElse(field, (field: (String, Js.Value)) => throw new Invalid.Data(v, "Unknown field " + field + " in lens delta object " + v))
+        case _ => throw new Invalid.Data(v, "Invalid delta, empty object for lens delta")
+      }
+
+      case ("value", v) => ValueDelta(implicitly[Reader[M]].read(v))
+      
+      case _ => throw new Invalid.Data(v, "Invalid delta, expected object with field lens, set or action")
+    }
+    case _ => throw new Invalid.Data(v, "Invalid delta, expected object")
+  }
+  
+  /**
+    * Add a field to delta
+    */
+  def fieldToDelta(newFToD: PartialFunction[(String, Js.Value), Delta[M]]) = 
+    new DeltaReaderBuilder(fToD.orElse(newFToD))
+    
+  /**
+    * Add a lens from M to S
+    */
+  def lens[S: DeltaReader](fieldName: String, theLens: Lens[M, S]) = fieldToDelta {
+    case (fieldName, v) => LensDelta(theLens, implicitly[DeltaReader[S]].readDelta(v))
+  }
+  
+  def action[A <: Delta[M] : Reader] = new DeltaReaderWithAction(this)
+}
+
+object DeltaReaderBuilder {
+  def empty[M: Reader] = new DeltaReaderBuilder[M](PartialFunction.empty)
+}
+
+class DeltaReaderWithAction[M, A <: Delta[M] : Reader](delegate: DeltaReader[M]) extends DeltaReader[M] {
+  def readDelta(v: Js.Value): Delta[M] = v match {
+    case Js.Obj(field, _ @ _*) => field match {
+      case ("action", v) => implicitly[Reader[A]].read(v)
+      
+      case _ => delegate.readDelta(v) 
+    }
+    case _ => throw new Invalid.Data(v, "Invalid delta, expected object")
+  }
+}
+
 
 object Street {
   import DeltaReaders._
-  
-  implicit val streetDeltaReader: DeltaReader[Street] = new DeltaReader[Street] {
-    def readDelta(v: Js.Value): Delta[Street] = v match {
-      case Js.Obj(field, _ @ _*) => field match {
-        case ("lens", v) => v match {
-          case Js.Obj(field, _ @ _*) => field match {
-            case ("name", v) => LensDelta(Street.name, deltaReaderFromReader[String].readDelta(v))
-            case ("number", v) => LensDelta(Street.number, deltaReaderFromReader[Int].readDelta(v))
-            case _ => throw new Invalid.Data(v, "Invalid delta, expected object with name or number field")
-          }
-        }
-        
-        case ("value", v) => ValueDelta(implicitly[Reader[Street]].read(v))
-        
-        case ("action", v) => implicitly[Reader[StreetAction]].read(v)
-        
-        case _ => throw new Invalid.Data(v, "Invalid delta, expected object with field lens, set or action")
-      }
-      case _ => throw new Invalid.Data(v, "Invalid delta, expected object")
-    }
-  }
+  implicit val streetDeltaReader = 
+    DeltaReader.build[Street]
+      .lens("name", Street.name)
+      .lens("number", Street.number)
+      .action[StreetAction]
 }
 
 /**
@@ -87,7 +126,7 @@ case class RootParent[R](callback: (Delta[R], Js.Value) => Unit) extends Parent[
  * Produce a parent for a child component, using a lens for a named field to
  * reach that child's model.
  */ 
-case class LensParent[P, C](parent: Parent[P], lens: Lens[P, C], fieldName: String) extends Parent[C] {
+case class LensParent[P, C](parent: Parent[P], fieldName: String, lens: Lens[P, C]) extends Parent[C] {
   def runDelta(delta: Delta[C], deltaJs: Js.Value): Unit = {
     //Produce a LensDelta from the provided child delta, to make it into a delta
     //of the parent
@@ -124,31 +163,16 @@ case class Cursor[M](parent: Parent[M], model: M) extends Parent[M] {
   //type for that child (e.g. StreetCursor), when that child is also using the same macro?
   //This would then prevent use of invalid fields, and could propagate access control through
   //a data model, etc.
-  def zoom[C](lens: Lens[M, C], fieldName: String): Cursor[C] = 
-    Cursor(LensParent(parent, lens, fieldName), lens.get(model))
+  def zoom[C](fieldName: String, lens: Lens[M, C]): Cursor[C] = 
+    Cursor(LensParent(parent, fieldName, lens), lens.get(model))
 }
 
 object Address {
   import Street._
   
-  implicit val addressDeltaReader: DeltaReader[Address] = new DeltaReader[Address] {
-    def readDelta(v: Js.Value): Delta[Address] = v match {
-      case Js.Obj(field, _ @ _*) => field match {
-        case ("lens", v) => v match {
-          case Js.Obj(field, _ @ _*) => field match {
-            case ("street", v) => LensDelta(Address.street, streetDeltaReader.readDelta(v))
-            case _ => throw new Invalid.Data(v, "Invalid delta, expected object with street field")
-          }
-        }
-        case ("value", v) => ValueDelta(implicitly[Reader[Address]].read(v))
-        
-        case _ => throw new Invalid.Data(v, "Invalid delta, expected object with name or number field")
-      }
-
-      case _ => throw new Invalid.Data(v, "Invalid delta, expected object")
-    }
-  }
-
+  implicit val addressDeltaReader = 
+    DeltaReader.build[Address]
+      .lens("street", Address.street)
 }
 
 object Company {
@@ -179,74 +203,13 @@ trait DeltaReader[M] {
 
 object DemoApp extends JSApp {
 
-  import View._
-
-  implicit val streetView = new View[Street] {
-    def render(m: Street) = div(p("Street:"), view(m.name), view(m.number))
-  }
-
-  implicit val addressView = new View[Address] {
-    def render(m: Address) = div(p("Address:"), view(m.street))
-  }
-
-  implicit val companyView = new View[Company] {
-    def render(m: Company) = div(p("Company:"), view(m.address))
-  }
-
-  implicit val employeeView = new View[Employee] {
-    def render(m: Employee) = div(p("Employee:"), view(m.name), view(m.company))
-  }
-
   def appendPar(targetNode: dom.Node, text: String): Unit = {
     targetNode.appendChild(p(text).render)
-  }
-
-  @JSExport
-  def addClickedMessage(): Unit = {
-    appendPar(document.body, "You clicked the button!")
   }
 
   def main(): Unit = {
     
     val a = Address(Street("OLD STREET", 1))
-    
-    val a2 = Address.addressDeltaReader.readDelta(
-      Js.Obj("lens" -> 
-        Js.Obj("street" ->
-          Js.Obj("lens" -> 
-            Js.Obj("name" -> Js.Str("Specified new street name!"))
-          )
-        )
-      )
-    ).apply(a)
-
-    val a3 = Address.addressDeltaReader.readDelta(
-      Js.Obj("lens" -> 
-        Js.Obj("street" ->
-          Js.Obj("lens" -> 
-            Js.Obj("number" -> Js.Num(42))
-          )
-        )
-      )
-    ).apply(a2)
-
-    val valueDeltaJSON =       
-      Js.Obj("lens" -> 
-        Js.Obj("street" ->
-          Js.Obj("value" -> implicitly[Writer[Street]].write(Street("Completely new value street", 9001))
-          )
-        )
-      )
-
-    val a4 = Address.addressDeltaReader.readDelta(valueDeltaJSON).apply(a3)
-
-    val a5 = Address.addressDeltaReader.readDelta(
-      Js.Obj("lens" -> 
-        Js.Obj("street" ->
-          Js.Obj("action" -> implicitly[Writer[StreetAction]].write(StreetActionNumberMultiple(2)))
-        )
-      )
-    ).apply(a4)
 
     //Build a delta using cursor, just adding resulting new models to paragraphs
     //alongside the encoded JSON, then applying the delta read from encoded js
@@ -265,31 +228,10 @@ object DemoApp extends JSApp {
     }
     val root = RootParent(callback)
     val addressCursor = Cursor(root, a)
-    val streetCursor = addressCursor.zoom(Address.street, "street")
+    val streetCursor = addressCursor.zoom("street", Address.street)
     
     streetCursor.set(Street("New street set using cursor", 9002))
     streetCursor.set(Street("Another new street set using cursor", 9003))
     streetCursor.act(StreetActionNumberMultiple(3))
-
-    appendPar(document.body, "Before delta: " + a)
-    appendPar(document.body, "After name delta: " + a2)
-    appendPar(document.body, "After number delta: " + a3)
-    appendPar(document.body, "After set delta: " + a4)
-    // appendPar(document.body, "After action delta: " + a5)
-    appendPar(document.body, "Example JSON delta: " + valueDeltaJSON)
-
-    val e = Employee("bob", Company(Address(Street("bobstreet", 42))))
-    
-    val streetName = (Employee.company ^|-> Company.address ^|-> Address.street ^|-> Street.name).get(e)
-    
-    appendPar(document.body, streetName)
-    
-    appendPar(document.body, "Hello World")
-
-    document.body.appendChild(view(e).render)
-    
-    val lv = listView[String]
-    
-    document.body.appendChild(div(lv.render(List("a", "b", "c"))).render)
   }
 }
